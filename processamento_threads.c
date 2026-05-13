@@ -379,6 +379,13 @@ void printResultados(Context *ctx_caxias, Context *ctx_bento) {
     printf("Pressao min: %.2f em %s\n", ctx_caxias->stats.pressaoMin, ctx_caxias->stats.pressaoMinData);
     printf("Pressao max: %.2f em %s\n", ctx_caxias->stats.pressaoMax, ctx_caxias->stats.pressaoMaxData);
     printf("Bateria inicial: %.2f | final: %.2f\n", ctx_caxias->stats.batInicial, ctx_caxias->stats.batFinal);
+    printf("Spreading Factors utilizados: ");
+    int achou = 0;
+    for (int i = 0; i < 22; i++) {
+        if (ctx_caxias->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
+    }
+    if (!achou) printf("nenhum");
+    printf("\n");
 
     printf("\n=== BENTO GONCALVES ===\n");
     printf("Total de registros: %d\n", ctx_bento->stats.total);
@@ -390,6 +397,13 @@ void printResultados(Context *ctx_caxias, Context *ctx_bento) {
     printf("Pressao min: %.2f em %s\n", ctx_bento->stats.pressaoMin, ctx_bento->stats.pressaoMinData);
     printf("Pressao max: %.2f em %s\n", ctx_bento->stats.pressaoMax, ctx_bento->stats.pressaoMaxData);
     printf("Bateria inicial: %.2f | final: %.2f\n", ctx_bento->stats.batInicial, ctx_bento->stats.batFinal);
+    printf("Spreading Factors utilizados: ");
+    achou = 0;
+    for (int i = 0; i < 22; i++) {
+        if (ctx_bento->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
+    }
+    if (!achou) printf("nenhum");
+    printf("\n");
 }
 
 

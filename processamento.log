@@ -1,8 +1,8 @@
-[2026-05-13 20:37:09] Thread leitura iniciada: sensores_caxias.json
-[2026-05-13 20:37:09] Thread calculo iniciada: sensores_caxias.json
-[2026-05-13 20:37:09] Thread leitura iniciada: sensores_bento.json
-[2026-05-13 20:37:09] Thread calculo iniciada: sensores_bento.json
-[2026-05-13 20:37:09] Thread leitura concluida: sensores_caxias.json
-[2026-05-13 20:37:09] Thread calculo concluida: sensores_caxias.json - 5055 registros
-[2026-05-13 20:37:10] Thread leitura concluida: sensores_bento.json
-[2026-05-13 20:37:10] Thread calculo concluida: sensores_bento.json - 43191 registros
+[2026-05-13 20:54:02] Thread leitura iniciada: sensores_caxias.json
+[2026-05-13 20:54:02] Thread calculo iniciada: sensores_bento.json
+[2026-05-13 20:54:02] Thread leitura iniciada: sensores_bento.json
+[2026-05-13 20:54:02] Thread calculo iniciada: sensores_caxias.json
+[2026-05-13 20:54:03] Thread leitura concluida: sensores_caxias.json
+[2026-05-13 20:54:03] Thread calculo concluida: sensores_caxias.json - 5055 registros
+[2026-05-13 20:54:03] Thread leitura concluida: sensores_bento.json
+[2026-05-13 20:54:03] Thread calculo concluida: sensores_bento.json - 43191 registros
