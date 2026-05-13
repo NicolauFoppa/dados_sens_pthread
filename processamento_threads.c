@@ -58,12 +58,79 @@ typedef struct{
     int total;
 }Stats;
 
+#define LOG_QUEUE_SIZE 512
+
+typedef struct {
+    char msg[256];
+} LogMsg;
+
+typedef struct {
+    LogMsg msgs[LOG_QUEUE_SIZE];
+    int head, tail, done;
+    pthread_mutex_t mutex;
+    sem_t empty, full;
+} LogQueue;
+
 typedef struct{
     Stats stats;
     Fila fila;
     char nomeArquivo[64];
+    LogQueue *log_q;
 } Context;
 
+
+void iniciaLogQueue(LogQueue *q) {
+    q->head = q->tail = q->done = 0;
+    pthread_mutex_init(&q->mutex, NULL);
+    sem_init(&q->empty, 0, LOG_QUEUE_SIZE);
+    sem_init(&q->full, 0, 0);
+}
+
+void addLog(LogQueue *q, const char *msg) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "[%04d-%02d-%02d %02d:%02d:%02d] %s",
+             t->tm_year+1900, t->tm_mon+1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec, msg);
+    sem_wait(&q->empty);
+    pthread_mutex_lock(&q->mutex);
+    strncpy(q->msgs[q->tail].msg, buf, 255);
+    q->msgs[q->tail].msg[255] = '\0';
+    q->tail = (q->tail + 1) % LOG_QUEUE_SIZE;
+    pthread_mutex_unlock(&q->mutex);
+    sem_post(&q->full);
+}
+
+int removeLog(LogQueue *q, LogMsg *m) {
+    sem_wait(&q->full);
+    pthread_mutex_lock(&q->mutex);
+    if (q->done && q->head == q->tail) {
+        pthread_mutex_unlock(&q->mutex);
+        return 0;
+    }
+    *m = q->msgs[q->head];
+    q->head = (q->head + 1) % LOG_QUEUE_SIZE;
+    pthread_mutex_unlock(&q->mutex);
+    sem_post(&q->empty);
+    return 1;
+}
+
+void terminaLog(LogQueue *q) {
+    q->done = 1;
+    sem_post(&q->full);
+}
+
+void *thread_log(void *arg) {
+    LogQueue *q = (LogQueue *) arg;
+    FILE *f = fopen("processamento.log", "w");
+    if (!f) return NULL;
+    LogMsg m;
+    while (removeLog(q, &m))
+        fprintf(f, "%s\n", m.msg);
+    fclose(f);
+    return NULL;
+}
 
 void iniciaFila(Fila *q){
     q->head = 0;
@@ -106,10 +173,15 @@ void termina(Fila *fila){
 
 void *thread_leitura(void *args){
     Context *ctx = (Context *) args;
+    char logbuf[256];
+
+    snprintf(logbuf, sizeof(logbuf), "Thread leitura iniciada: %s", ctx->nomeArquivo);
+    addLog(ctx->log_q, logbuf);
 
     FILE *file = fopen(ctx->nomeArquivo, "r");
     if(!file){
-        // Adicionar log
+        snprintf(logbuf, sizeof(logbuf), "Erro: arquivo nao encontrado: %s", ctx->nomeArquivo);
+        addLog(ctx->log_q, logbuf);
         return NULL;
     }
 
@@ -180,13 +252,19 @@ void *thread_leitura(void *args){
     }
 
     cJSON_Delete(root);
+    snprintf(logbuf, sizeof(logbuf), "Thread leitura concluida: %s", ctx->nomeArquivo);
+    addLog(ctx->log_q, logbuf);
     termina(&ctx->fila);
     return NULL;
 }
 
 void *thread_calculo(void *arg){
     Context *ctx = (Context *) arg;
+    char logbuf[256];
     Record r;
+
+    snprintf(logbuf, sizeof(logbuf), "Thread calculo iniciada: %s", ctx->nomeArquivo);
+    addLog(ctx->log_q, logbuf);
 
     while(removeRecord(&ctx->fila, &r)){
         if(r.temperatura != -999.0f){
@@ -236,6 +314,9 @@ void *thread_calculo(void *arg){
 
     ctx->stats.total++;
   }
+
+    snprintf(logbuf, sizeof(logbuf), "Thread calculo concluida: %s - %d registros", ctx->nomeArquivo, ctx->stats.total);
+    addLog(ctx->log_q, logbuf);
 
  return NULL;
 }
@@ -322,6 +403,11 @@ int main() {
     memset(&ctx_caxias, 0, sizeof(Context));
     memset(&ctx_bento,  0, sizeof(Context));
 
+    LogQueue log_q;
+    iniciaLogQueue(&log_q);
+    ctx_caxias.log_q = &log_q;
+    ctx_bento.log_q  = &log_q;
+
     strncpy(ctx_caxias.nomeArquivo, "sensores_caxias.json", 63);
     strncpy(ctx_bento.nomeArquivo,  "sensores_bento.json",  63);
 
@@ -346,9 +432,11 @@ int main() {
 
 
     // cria as threads
+    pthread_t t_log;
     pthread_t t_leitura_caxias, t_calculo_caxias;
     pthread_t t_leitura_bento,  t_calculo_bento;
 
+    pthread_create(&t_log,           NULL, thread_log,    &log_q);
     pthread_create(&t_leitura_caxias, NULL, thread_leitura, &ctx_caxias);
     pthread_create(&t_calculo_caxias, NULL, thread_calculo, &ctx_caxias);
     pthread_create(&t_leitura_bento,  NULL, thread_leitura, &ctx_bento);
@@ -360,7 +448,9 @@ int main() {
     pthread_join(t_leitura_bento,  NULL);
     pthread_join(t_calculo_bento,  NULL);
 
-    // encerra log depois que tudo terminou
+    // encerra a fila de log e aguarda thread terminar
+    terminaLog(&log_q);
+    pthread_join(t_log, NULL);
 
     // tempo de execução
     clock_gettime(CLOCK_MONOTONIC, &t_fim);
@@ -369,6 +459,19 @@ int main() {
 
     // imprime resultados
     printResultados(&ctx_caxias, &ctx_bento);
-    printf("\nTempo total de execucao: %.4f segundos\n", tempo);
+    printf("\n");
+    printLinha(1);
+    printf("Tempo total de execucao: %.2f segundos\n", tempo);
+    printf("Threads utilizadas: 5\n");
+    printf(" - Thread 1: leitura dos dados (Caxias)\n");
+    printf(" - Thread 2: calculo das estatisticas (Caxias)\n");
+    printf(" - Thread 3: leitura dos dados (Bento)\n");
+    printf(" - Thread 4: calculo das estatisticas (Bento)\n");
+    printf(" - Thread 5: registro de logs\n");
+    printf("\n");
+    printf("Arquivo de log gerado: processamento.log\n");
+    printf("\n");
+    printLinha(0);
+    printf("Processamento finalizado com sucesso.\n");
     return 0;
 }
