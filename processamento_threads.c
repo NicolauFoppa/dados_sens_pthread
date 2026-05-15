@@ -25,7 +25,7 @@ typedef struct{
     int head;
     int tail;
     int count;
-    int done; 
+    int done;
     pthread_mutex_t mutex;
     sem_t empty;
     sem_t full;
@@ -56,6 +56,8 @@ typedef struct{
     int sfUsado[22];
 
     int total;
+    char periodoInicio[64];
+    char periodoFim[64];
 }Stats;
 
 #define LOG_QUEUE_SIZE 512
@@ -202,7 +204,6 @@ void *thread_leitura(void *args){
         cJSON *createdAt = cJSON_GetObjectItem(item, "created_at");
         if(!createdAt)
             createdAt = cJSON_GetObjectItem(item, "payload_date");
-        //cJSON *id = cJSON_GetObjectItem(item, "id");
 
         cJSON *payloadStr = cJSON_GetObjectItem(item, "payload");
             if(!payloadStr)
@@ -225,7 +226,7 @@ void *thread_leitura(void *args){
         r.temperatura = -999.0f;
         r.bateria = -999.0f;
         r.spreading_factor = -1;
-        
+
         cJSON *entry = NULL;
         cJSON_ArrayForEach(entry, data){
             cJSON *variable = cJSON_GetObjectItem(entry, "variable");
@@ -242,7 +243,7 @@ void *thread_leitura(void *args){
                 r.bateria = (float) value->valuedouble;
             else if(strcmp(variable->valuestring, "lora_spreading_factor") == 0)
                 r.spreading_factor = (int) value->valuedouble;
-            
+
         }
 
         cJSON_Delete(payload);
@@ -299,111 +300,213 @@ void *thread_calculo(void *arg){
             if(r.umidade > ctx->stats.umidadeMax){
                 ctx->stats.umidadeMax = r.umidade;
                 strcpy(ctx->stats.umidadeMaxData, r.datetime);
+            }
+            ctx->stats.umidadeSoma += r.umidade;
         }
-        ctx->stats.umidadeSoma += r.umidade;
-    }
 
-    if(ctx->stats.total == 0){
-        ctx->stats.batInicial = r.bateria;
-    }
-    ctx->stats.batFinal = r.bateria;
+        if(ctx->stats.total == 0){
+            ctx->stats.batInicial = r.bateria;
+            strncpy(ctx->stats.periodoInicio, r.datetime, 63);
+        }
+        ctx->stats.batFinal = r.bateria;
+        strncpy(ctx->stats.periodoFim, r.datetime, 63);
 
-    if(r.spreading_factor > -1){
-        ctx->stats.sfUsado[r.spreading_factor] = 1;
-    }
+        if(r.spreading_factor > -1){
+            ctx->stats.sfUsado[r.spreading_factor] = 1;
+        }
 
-    ctx->stats.total++;
-  }
+        ctx->stats.total++;
+    }
 
     snprintf(logbuf, sizeof(logbuf), "Thread calculo concluida: %s - %d registros", ctx->nomeArquivo, ctx->stats.total);
     addLog(ctx->log_q, logbuf);
 
- return NULL;
+    return NULL;
+}
+
+static void printPad(const char *s, int w) {
+    printf("%s", s);
+    int bytes = (int)strlen(s), vis = 0;
+    for (int i = 0; i < bytes; ) {
+        unsigned char c = (unsigned char)s[i];
+        if      (c < 0x80) { vis++; i += 1; }
+        else if (c < 0xE0) { vis++; i += 2; }
+        else if (c < 0xF0) { vis++; i += 3; }
+        else               { vis++; i += 4; }
+    }
+    for (int i = vis; i < w; i++) printf(" ");
+}
+
+static void formatarData(const char *in, char *out, size_t len) {
+    int y, mo, d, h, mi, s;
+    if (sscanf(in, "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s) == 6 ||
+        sscanf(in, "%4d-%2d-%2d %2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s) == 6)
+        snprintf(out, len, "%02d/%02d/%04d %02d:%02d:%02d", d, mo, y, h, mi, s);
+    else { strncpy(out, in, len-1); out[len-1] = '\0'; }
+}
+
+static void formatarDataCurta(const char *in, char *out, size_t len) {
+    int y, mo, d;
+    if (sscanf(in, "%4d-%2d-%2d", &y, &mo, &d) == 3)
+        snprintf(out, len, "%02d/%02d/%04d", d, mo, y);
+    else { strncpy(out, in, len-1); out[len-1] = '\0'; }
+}
+
+static void printIntBR(int n) {
+    if (n >= 1000000)
+        printf("%d.%03d.%03d", n/1000000, (n/1000)%1000, n%1000);
+    else if (n >= 1000)
+        printf("%d.%03d", n/1000, n%1000);
+    else
+        printf("%d", n);
 }
 
 void printLinha(int tipo){
     if(tipo == 0) {printf("============================================================\n"); return;}
     if(tipo == 1) {printf("------------------------------------------------------------\n"); return;}
     printf("-----------------------------------------------------------------------------------------------\n");
-
 }
 
-void printVazio(){
-    printf("\n");
-}
+void printResultados(Context *ctx_caxias, Context *ctx_bento, double tempo) {
+    Stats *sc = &ctx_caxias->stats;
+    Stats *sb = &ctx_bento->stats;
+    char d1[32], d2[32], pi[32], pf[32];
 
-void printChunk(int tipo){
-    printLinha(2);
-    printf("Cidade            | Mínima | Data/Hora             | Máxima | Data/Hora             | Média\n"); return;
-}
-
-
-void print(){
     printLinha(0);
     printf("ANÁLISE DE DADOS DOS SENSORES - CityLivingLab\n");
     printf("Processamento utilizando pthreads\n");
     printLinha(0);
-    printVazio();
-    printf("Arquuivo analisado: sensores_caxias.json\n");
-    printf("Total de registros processados: 52.184\n");
-    printf("Período analisado: 01/01/2025 a 31/12/2024\n");
-    printVazio();
-    printf("Arquivo analisado: sensores_bento.json\n");
-    printf("Total de registros processados: 52.184\n");
-    printf("Período analisado: 01/01/2025 a 31/12/2024\n");
-    printVazio();
+    printf("\n");
+
+    formatarDataCurta(sc->periodoInicio, pi, sizeof(pi));
+    formatarDataCurta(sc->periodoFim,    pf, sizeof(pf));
+    printf("Arquivo analisado: %s\n", ctx_caxias->nomeArquivo);
+    printf("Total de registros processados: "); printIntBR(sc->total); printf("\n");
+    printf("Período analisado: %s a %s\n", pi, pf);
+    printf("\n");
+
+    formatarDataCurta(sb->periodoInicio, pi, sizeof(pi));
+    formatarDataCurta(sb->periodoFim,    pf, sizeof(pf));
+    printf("Arquivo analisado: %s\n", ctx_bento->nomeArquivo);
+    printf("Total de registros processados: "); printIntBR(sb->total); printf("\n");
+    printf("Período analisado: %s a %s\n", pi, pf);
+    printf("\n");
+
+    // TEMPERATURA
     printLinha(1);
     printf("TEMPERATURA (°C)\n");
     printLinha(1);
-    printChunk(0);
+    printf("Cidade            | Mínima | Data/Hora             | Máxima | Data/Hora             | Média\n");
     printLinha(2);
-    printf("Caxias do Sul     | 2.10   | 05/07/2025 06:14:02   | 38.45  | 12/02/2025 15:64:18   | 18.73\n");
-    printf("Bento Gonçalves   | 1.85   | 06/07/2025 06:10:44   | 36.90  | 14/02/2025 16:02:11   | 17.95\n");
-    printVazio();
-    printVazio();
+    formatarData(sc->temperaturaMinData, d1, sizeof(d1));
+    formatarData(sc->temperaturaMaxData, d2, sizeof(d2));
+    printPad("Caxias do Sul", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sc->temperaturaMin, d1, sc->temperaturaMax, d2,
+           sc->temperaturaSoma / sc->total);
+    formatarData(sb->temperaturaMinData, d1, sizeof(d1));
+    formatarData(sb->temperaturaMaxData, d2, sizeof(d2));
+    printPad("Bento Gonçalves", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sb->temperaturaMin, d1, sb->temperaturaMax, d2,
+           sb->temperaturaSoma / sb->total);
+    printf("\n\n");
+
+    // UMIDADE
     printLinha(1);
     printf("UMIDADE (%%)\n");
     printLinha(1);
-    printChunk(0);
+    printf("Cidade            | Mínima | Data/Hora             | Máxima | Data/Hora             | Média\n");
     printLinha(2);
-}
+    formatarData(sc->umidadeMinData, d1, sizeof(d1));
+    formatarData(sc->umidadeMaxData, d2, sizeof(d2));
+    printPad("Caxias do Sul", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sc->umidadeMin, d1, sc->umidadeMax, d2,
+           sc->umidadeSoma / sc->total);
+    formatarData(sb->umidadeMinData, d1, sizeof(d1));
+    formatarData(sb->umidadeMaxData, d2, sizeof(d2));
+    printPad("Bento Gonçalves", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sb->umidadeMin, d1, sb->umidadeMax, d2,
+           sb->umidadeSoma / sb->total);
+    printf("\n\n");
 
-void printResultados(Context *ctx_caxias, Context *ctx_bento) {
-    printf("=== CAXIAS DO SUL ===\n");
-    printf("Total de registros: %d\n", ctx_caxias->stats.total);
-    printf("Temp min: %.2f em %s\n", ctx_caxias->stats.temperaturaMin, ctx_caxias->stats.temperaturaMinData);
-    printf("Temp max: %.2f em %s\n", ctx_caxias->stats.temperaturaMax, ctx_caxias->stats.temperaturaMaxData);
-    printf("Temp media: %.2f\n", ctx_caxias->stats.temperaturaSoma / ctx_caxias->stats.total);
-    printf("Umidade min: %.2f em %s\n", ctx_caxias->stats.umidadeMin, ctx_caxias->stats.umidadeMinData);
-    printf("Umidade max: %.2f em %s\n", ctx_caxias->stats.umidadeMax, ctx_caxias->stats.umidadeMaxData);
-    printf("Pressao min: %.2f em %s\n", ctx_caxias->stats.pressaoMin, ctx_caxias->stats.pressaoMinData);
-    printf("Pressao max: %.2f em %s\n", ctx_caxias->stats.pressaoMax, ctx_caxias->stats.pressaoMaxData);
-    printf("Bateria inicial: %.2f | final: %.2f\n", ctx_caxias->stats.batInicial, ctx_caxias->stats.batFinal);
-    printf("Spreading Factors utilizados: ");
-    int achou = 0;
-    for (int i = 0; i < 22; i++) {
-        if (ctx_caxias->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
-    }
-    if (!achou) printf("nenhum");
-    printf("\n");
+    // PRESSÃO ATMOSFÉRICA
+    printLinha(1);
+    printf("PRESSÃO ATMOSFÉRICA (hPa)\n");
+    printLinha(1);
+    printf("Cidade            | Mínima | Data/Hora             | Máxima | Data/Hora             | Média\n");
+    printLinha(2);
+    formatarData(sc->pressaoMinData, d1, sizeof(d1));
+    formatarData(sc->pressaoMaxData, d2, sizeof(d2));
+    printPad("Caxias do Sul", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sc->pressaoMin, d1, sc->pressaoMax, d2,
+           sc->pressaoSoma / sc->total);
+    formatarData(sb->pressaoMinData, d1, sizeof(d1));
+    formatarData(sb->pressaoMaxData, d2, sizeof(d2));
+    printPad("Bento Gonçalves", 18);
+    printf("| %-7.2f| %-22s| %-7.2f| %-22s| %.2f\n",
+           sb->pressaoMin, d1, sb->pressaoMax, d2,
+           sb->pressaoSoma / sb->total);
+    printf("\n\n");
 
-    printf("\n=== BENTO GONCALVES ===\n");
-    printf("Total de registros: %d\n", ctx_bento->stats.total);
-    printf("Temp min: %.2f em %s\n", ctx_bento->stats.temperaturaMin, ctx_bento->stats.temperaturaMinData);
-    printf("Temp max: %.2f em %s\n", ctx_bento->stats.temperaturaMax, ctx_bento->stats.temperaturaMaxData);
-    printf("Temp media: %.2f\n", ctx_bento->stats.temperaturaSoma / ctx_bento->stats.total);
-    printf("Umidade min: %.2f em %s\n", ctx_bento->stats.umidadeMin, ctx_bento->stats.umidadeMinData);
-    printf("Umidade max: %.2f em %s\n", ctx_bento->stats.umidadeMax, ctx_bento->stats.umidadeMaxData);
-    printf("Pressao min: %.2f em %s\n", ctx_bento->stats.pressaoMin, ctx_bento->stats.pressaoMinData);
-    printf("Pressao max: %.2f em %s\n", ctx_bento->stats.pressaoMax, ctx_bento->stats.pressaoMaxData);
-    printf("Bateria inicial: %.2f | final: %.2f\n", ctx_bento->stats.batInicial, ctx_bento->stats.batFinal);
-    printf("Spreading Factors utilizados: ");
-    achou = 0;
-    for (int i = 0; i < 22; i++) {
-        if (ctx_bento->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
+    // BATERIA
+    printLinha(1);
+    printf("BATERIA\n");
+    printLinha(1);
+    printf("%-18s| %-12s| %-10s| %s\n", "Cidade", "Inicial (V)", "Final (V)", "Consumo (V)");
+    printLinha(1);
+    printPad("Caxias do Sul", 18);
+    printf("| %-12.2f| %-10.2f| %.2f\n",
+           sc->batInicial, sc->batFinal, sc->batInicial - sc->batFinal);
+    printPad("Bento Gonçalves", 18);
+    printf("| %-12.2f| %-10.2f| %.2f\n",
+           sb->batInicial, sb->batFinal, sb->batInicial - sb->batFinal);
+    printf("\n\n");
+
+    // SPREADING FACTORS
+    printLinha(1);
+    printf("SPREADING FACTORS UTILIZADOS\n");
+    printLinha(1);
+    printf("%-18s| %s\n", "Cidade", "SF utilizados");
+    printLinha(1);
+    printPad("Caxias do Sul", 18);
+    printf("| ");
+    { int first = 1;
+      for (int i = 0; i < 22; i++) {
+          if (sc->sfUsado[i]) { if (!first) printf(", "); printf("SF%d", i); first = 0; }
+      }
+      if (first) printf("nenhum");
     }
-    if (!achou) printf("nenhum");
     printf("\n");
+    printPad("Bento Gonçalves", 18);
+    printf("| ");
+    { int first = 1;
+      for (int i = 0; i < 22; i++) {
+          if (sb->sfUsado[i]) { if (!first) printf(", "); printf("SF%d", i); first = 0; }
+      }
+      if (first) printf("nenhum");
+    }
+    printf("\n");
+    printf("\n\n");
+
+    // DESEMPENHO
+    printLinha(1);
+    printf("DESEMPENHO\n");
+    printLinha(1);
+    printf("Tempo total de execução: %.2f segundos\n", tempo);
+    printf("Threads utilizadas: 3\n");
+    printf(" - Thread 1: leitura dos dados\n");
+    printf(" - Thread 2: cálculo das estatísticas\n");
+    printf(" - Thread 3: registro de logs\n");
+    printf("\n");
+    printf("Arquivo de log gerado: processamento.log\n");
+    printf("\n");
+    printLinha(0);
+    printf("Processamento finalizado com sucesso.\n");
+    printLinha(0);
 }
 
 
@@ -411,7 +514,6 @@ int main() {
     struct timespec t_inicio, t_fim;
     clock_gettime(CLOCK_MONOTONIC, &t_inicio);
 
-    // contextos das cidades
     Context ctx_caxias;
     Context ctx_bento;
     memset(&ctx_caxias, 0, sizeof(Context));
@@ -425,11 +527,9 @@ int main() {
     strncpy(ctx_caxias.nomeArquivo, "sensores_caxias.json", 63);
     strncpy(ctx_bento.nomeArquivo,  "sensores_bento.json",  63);
 
-    // inicializa as filas de dados
     iniciaFila(&ctx_caxias.fila);
     iniciaFila(&ctx_bento.fila);
 
-    // inicializa stats com valores sentinela
     ctx_caxias.stats.temperaturaMin = FLT_MAX;
     ctx_caxias.stats.temperaturaMax = -FLT_MAX;
     ctx_caxias.stats.umidadeMin = FLT_MAX;
@@ -444,48 +544,28 @@ int main() {
     ctx_bento.stats.pressaoMin = FLT_MAX;
     ctx_bento.stats.pressaoMax = -FLT_MAX;
 
-
-    // cria as threads
     pthread_t t_log;
     pthread_t t_leitura_caxias, t_calculo_caxias;
     pthread_t t_leitura_bento,  t_calculo_bento;
 
-    pthread_create(&t_log,           NULL, thread_log,    &log_q);
+    pthread_create(&t_log,            NULL, thread_log,     &log_q);
     pthread_create(&t_leitura_caxias, NULL, thread_leitura, &ctx_caxias);
     pthread_create(&t_calculo_caxias, NULL, thread_calculo, &ctx_caxias);
     pthread_create(&t_leitura_bento,  NULL, thread_leitura, &ctx_bento);
     pthread_create(&t_calculo_bento,  NULL, thread_calculo, &ctx_bento);
 
-    // aguarda leitura e cálculo terminarem
     pthread_join(t_leitura_caxias, NULL);
     pthread_join(t_calculo_caxias, NULL);
     pthread_join(t_leitura_bento,  NULL);
     pthread_join(t_calculo_bento,  NULL);
 
-    // encerra a fila de log e aguarda thread terminar
     terminaLog(&log_q);
     pthread_join(t_log, NULL);
 
-    // tempo de execução
     clock_gettime(CLOCK_MONOTONIC, &t_fim);
     double tempo = (t_fim.tv_sec  - t_inicio.tv_sec) +
                    (t_fim.tv_nsec - t_inicio.tv_nsec) / 1e9;
 
-    // imprime resultados
-    printResultados(&ctx_caxias, &ctx_bento);
-    printf("\n");
-    printLinha(1);
-    printf("Tempo total de execucao: %.2f segundos\n", tempo);
-    printf("Threads utilizadas: 5\n");
-    printf(" - Thread 1: leitura dos dados (Caxias)\n");
-    printf(" - Thread 2: calculo das estatisticas (Caxias)\n");
-    printf(" - Thread 3: leitura dos dados (Bento)\n");
-    printf(" - Thread 4: calculo das estatisticas (Bento)\n");
-    printf(" - Thread 5: registro de logs\n");
-    printf("\n");
-    printf("Arquivo de log gerado: processamento.log\n");
-    printf("\n");
-    printLinha(0);
-    printf("Processamento finalizado com sucesso.\n");
+    printResultados(&ctx_caxias, &ctx_bento, tempo);
     return 0;
 }
