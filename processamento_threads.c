@@ -52,18 +52,95 @@ typedef struct{
 
     float batInicial;
     float batFinal;
+    char batInicialData[64];
+    char batFinalData[64];
+    int batInicialSet;
+    int batFinalSet;
 
     int sfUsado[22];
 
     int total;
 }Stats;
 
+#define LOG_QUEUE_SIZE 512
+
+typedef struct {
+    char msg[256];
+} LogMsg;
+
+typedef struct {
+    LogMsg msgs[LOG_QUEUE_SIZE];
+    int head, tail, done;
+    pthread_mutex_t mutex;
+    sem_t empty, full;
+} LogQueue;
+
 typedef struct{
     Stats stats;
     Fila fila;
     char nomeArquivo[64];
+    LogQueue *log_q;
 } Context;
 
+typedef struct{
+    Context *ctx_caxias;
+    Context *ctx_bento;
+    char nomeArquivo[64];
+} LeitorArgs;
+
+
+void iniciaLogQueue(LogQueue *q) {
+    q->head = q->tail = q->done = 0;
+    pthread_mutex_init(&q->mutex, NULL);
+    sem_init(&q->empty, 0, LOG_QUEUE_SIZE);
+    sem_init(&q->full, 0, 0);
+}
+
+void addLog(LogQueue *q, const char *msg) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "[%04d-%02d-%02d %02d:%02d:%02d] %s",
+             t->tm_year+1900, t->tm_mon+1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec, msg);
+    sem_wait(&q->empty);
+    pthread_mutex_lock(&q->mutex);
+    strncpy(q->msgs[q->tail].msg, buf, 255);
+    q->msgs[q->tail].msg[255] = '\0';
+    q->tail = (q->tail + 1) % LOG_QUEUE_SIZE;
+    pthread_mutex_unlock(&q->mutex);
+    sem_post(&q->full);
+}
+
+int removeLog(LogQueue *q, LogMsg *m) {
+    sem_wait(&q->full);
+    pthread_mutex_lock(&q->mutex);
+    if (q->done && q->head == q->tail) {
+        pthread_mutex_unlock(&q->mutex);
+        return 0;
+    }
+    *m = q->msgs[q->head];
+    q->head = (q->head + 1) % LOG_QUEUE_SIZE;
+    pthread_mutex_unlock(&q->mutex);
+    sem_post(&q->empty);
+    return 1;
+}
+
+void terminaLog(LogQueue *q) {
+    q->done = 1;
+    sem_post(&q->full);
+}
+
+void *thread_log(void *arg) {
+    LogQueue *q = (LogQueue *) arg;
+    FILE *f = fopen("processamento.log", "w");
+    if (!f) return NULL;
+    LogMsg m;
+    while (removeLog(q, &m))
+        fprintf(f, "%s\n", m.msg);
+    fclose(f);
+    return NULL;
+}
 
 void iniciaFila(Fila *q){
     q->head = 0;
@@ -105,11 +182,16 @@ void termina(Fila *fila){
 }
 
 void *thread_leitura(void *args){
-    Context *ctx = (Context *) args;
+    LeitorArgs *largs = (LeitorArgs *) args;
+    char logbuf[256];
 
-    FILE *file = fopen(ctx->nomeArquivo, "r");
+    snprintf(logbuf, sizeof(logbuf), "Thread leitura iniciada: %s", largs->nomeArquivo);
+    addLog(largs->ctx_caxias->log_q, logbuf);
+
+    FILE *file = fopen(largs->nomeArquivo, "r");
     if(!file){
-        // Adicionar log
+        snprintf(logbuf, sizeof(logbuf), "Erro: arquivo nao encontrado: %s", largs->nomeArquivo);
+        addLog(largs->ctx_caxias->log_q, logbuf);
         return NULL;
     }
 
@@ -137,12 +219,23 @@ void *thread_leitura(void *args){
             payloadStr = cJSON_GetObjectItem(item, "brute_data");
 
         if(!payloadStr || !createdAt) continue;
-
+        
         cJSON *payload = cJSON_Parse(payloadStr->valuestring);
         if(!payload) continue;
 
         cJSON *data = cJSON_GetObjectItem(payload, "data");
         if(!data){cJSON_Delete(payload); continue; }
+
+        cJSON *deviceName = cJSON_GetObjectItem(payload, "device_name");
+        if(!deviceName){ cJSON_Delete(payload); continue; }
+
+        Context *ctx;
+        if(strstr(deviceName->valuestring, "Caxias") != NULL)
+            ctx = largs->ctx_caxias;
+        else if(strstr(deviceName->valuestring, "Bento") != NULL)
+            ctx = largs->ctx_bento;
+        else { cJSON_Delete(payload); continue; }
+
 
         Record r;
 
@@ -180,13 +273,18 @@ void *thread_leitura(void *args){
     }
 
     cJSON_Delete(root);
-    termina(&ctx->fila);
+    snprintf(logbuf, sizeof(logbuf), "Thread leitura concluida: %s", largs->nomeArquivo);
+    addLog(largs->ctx_caxias->log_q, logbuf);
     return NULL;
 }
 
 void *thread_calculo(void *arg){
     Context *ctx = (Context *) arg;
+    char logbuf[256];
     Record r;
+
+    snprintf(logbuf, sizeof(logbuf), "Thread calculo iniciada: %s", ctx->nomeArquivo);
+    addLog(ctx->log_q, logbuf);
 
     while(removeRecord(&ctx->fila, &r)){
         if(r.temperatura != -999.0f){
@@ -213,29 +311,39 @@ void *thread_calculo(void *arg){
             ctx->stats.pressaoSoma += r.pressao;
         }
 
-        if(r.umidade != -999.0f){
-            if(r.umidade < ctx->stats.umidadeMin){
-                ctx->stats.umidadeMin = r.umidade;
-                strcpy(ctx->stats.umidadeMinData, r.datetime);
-            }
-            if(r.umidade > ctx->stats.umidadeMax){
-                ctx->stats.umidadeMax = r.umidade;
-                strcpy(ctx->stats.umidadeMaxData, r.datetime);
-        }
-        ctx->stats.umidadeSoma += r.umidade;
+       if(r.umidade != -999.0f){
+    if(r.umidade < ctx->stats.umidadeMin){
+        ctx->stats.umidadeMin = r.umidade;
+        strcpy(ctx->stats.umidadeMinData, r.datetime);
     }
+    if(r.umidade > ctx->stats.umidadeMax){
+        ctx->stats.umidadeMax = r.umidade;
+        strcpy(ctx->stats.umidadeMaxData, r.datetime);
+    }                             
+    ctx->stats.umidadeSoma += r.umidade;
+    }                                 
 
-    if(ctx->stats.total == 0){
+    if(r.bateria != -999.0f){
+       if(!ctx->stats.batInicialSet || strcmp(r.datetime, ctx->stats.batInicialData) < 0){
         ctx->stats.batInicial = r.bateria;
+        strncpy(ctx->stats.batInicialData, r.datetime, 63);
+        ctx->stats.batInicialSet = 1;
     }
-    ctx->stats.batFinal = r.bateria;
-
-    if(r.spreading_factor > -1){
-        ctx->stats.sfUsado[r.spreading_factor] = 1;
+    if(!ctx->stats.batFinalSet || strcmp(r.datetime, ctx->stats.batFinalData) > 0){
+        ctx->stats.batFinal    = r.bateria;
+        strncpy(ctx->stats.batFinalData, r.datetime, 63);
+        ctx->stats.batFinalSet = 1;
+    }
     }
 
-    ctx->stats.total++;
+if(r.spreading_factor > -1)
+    ctx->stats.sfUsado[r.spreading_factor] = 1;
+
+ctx->stats.total++;
   }
+
+    snprintf(logbuf, sizeof(logbuf), "Thread calculo concluida: %s - %d registros", ctx->nomeArquivo, ctx->stats.total);
+    addLog(ctx->log_q, logbuf);
 
  return NULL;
 }
@@ -298,6 +406,13 @@ void printResultados(Context *ctx_caxias, Context *ctx_bento) {
     printf("Pressao min: %.2f em %s\n", ctx_caxias->stats.pressaoMin, ctx_caxias->stats.pressaoMinData);
     printf("Pressao max: %.2f em %s\n", ctx_caxias->stats.pressaoMax, ctx_caxias->stats.pressaoMaxData);
     printf("Bateria inicial: %.2f | final: %.2f\n", ctx_caxias->stats.batInicial, ctx_caxias->stats.batFinal);
+    printf("Spreading Factors utilizados: ");
+    int achou = 0;
+    for (int i = 0; i < 22; i++) {
+        if (ctx_caxias->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
+    }
+    if (!achou) printf("nenhum");
+    printf("\n");
 
     printf("\n=== BENTO GONCALVES ===\n");
     printf("Total de registros: %d\n", ctx_bento->stats.total);
@@ -309,6 +424,16 @@ void printResultados(Context *ctx_caxias, Context *ctx_bento) {
     printf("Pressao min: %.2f em %s\n", ctx_bento->stats.pressaoMin, ctx_bento->stats.pressaoMinData);
     printf("Pressao max: %.2f em %s\n", ctx_bento->stats.pressaoMax, ctx_bento->stats.pressaoMaxData);
     printf("Bateria inicial: %.2f | final: %.2f\n", ctx_bento->stats.batInicial, ctx_bento->stats.batFinal);
+    printf("Spreading Factors utilizados: ");
+    achou = 0;
+    for (int i = 0; i < 22; i++) {
+        if (ctx_bento->stats.sfUsado[i]) { printf("SF%d ", i); achou = 1; }
+    }
+    if (!achou) printf("nenhum");
+    printf("\n");
+
+    printf("Bateria inicial: %.2f em %s\n", ctx_caxias->stats.batInicial, ctx_caxias->stats.batInicialData);
+    printf("Bateria final:   %.2f em %s\n", ctx_caxias->stats.batFinal,   ctx_caxias->stats.batFinalData);
 }
 
 
@@ -316,20 +441,22 @@ int main() {
     struct timespec t_inicio, t_fim;
     clock_gettime(CLOCK_MONOTONIC, &t_inicio);
 
-    // contextos das cidades
     Context ctx_caxias;
     Context ctx_bento;
     memset(&ctx_caxias, 0, sizeof(Context));
     memset(&ctx_bento,  0, sizeof(Context));
 
+    LogQueue log_q;
+    iniciaLogQueue(&log_q);
+    ctx_caxias.log_q = &log_q;
+    ctx_bento.log_q  = &log_q;
+
     strncpy(ctx_caxias.nomeArquivo, "sensores_caxias.json", 63);
     strncpy(ctx_bento.nomeArquivo,  "sensores_bento.json",  63);
 
-    // inicializa as filas de dados
     iniciaFila(&ctx_caxias.fila);
     iniciaFila(&ctx_bento.fila);
 
-    // inicializa stats com valores sentinela
     ctx_caxias.stats.temperaturaMin = FLT_MAX;
     ctx_caxias.stats.temperaturaMax = -FLT_MAX;
     ctx_caxias.stats.umidadeMin = FLT_MAX;
@@ -344,31 +471,49 @@ int main() {
     ctx_bento.stats.pressaoMin = FLT_MAX;
     ctx_bento.stats.pressaoMax = -FLT_MAX;
 
-
-    // cria as threads
+    LeitorArgs args_arquivo1 = { &ctx_caxias, &ctx_bento, "sensores_caxias.json" };
+    LeitorArgs args_arquivo2 = { &ctx_caxias, &ctx_bento, "sensores_bento.json"  };
+    
+    pthread_t t_log;
     pthread_t t_leitura_caxias, t_calculo_caxias;
     pthread_t t_leitura_bento,  t_calculo_bento;
 
-    pthread_create(&t_leitura_caxias, NULL, thread_leitura, &ctx_caxias);
+   pthread_create(&t_log,            NULL, thread_log,    &log_q);
+    pthread_create(&t_leitura_caxias, NULL, thread_leitura, &args_arquivo1);
+    pthread_create(&t_leitura_bento,  NULL, thread_leitura, &args_arquivo2);
     pthread_create(&t_calculo_caxias, NULL, thread_calculo, &ctx_caxias);
-    pthread_create(&t_leitura_bento,  NULL, thread_leitura, &ctx_bento);
     pthread_create(&t_calculo_bento,  NULL, thread_calculo, &ctx_bento);
 
-    // aguarda leitura e cálculo terminarem
     pthread_join(t_leitura_caxias, NULL);
-    pthread_join(t_calculo_caxias, NULL);
     pthread_join(t_leitura_bento,  NULL);
+
+    termina(&ctx_caxias.fila);
+    termina(&ctx_bento.fila);
+
+    pthread_join(t_calculo_caxias, NULL);
     pthread_join(t_calculo_bento,  NULL);
 
-    // encerra log depois que tudo terminou
+    terminaLog(&log_q);
+    pthread_join(t_log, NULL);
 
-    // tempo de execução
     clock_gettime(CLOCK_MONOTONIC, &t_fim);
     double tempo = (t_fim.tv_sec  - t_inicio.tv_sec) +
                    (t_fim.tv_nsec - t_inicio.tv_nsec) / 1e9;
 
-    // imprime resultados
     printResultados(&ctx_caxias, &ctx_bento);
-    printf("\nTempo total de execucao: %.4f segundos\n", tempo);
+    printf("\n");
+    printLinha(1);
+    printf("Tempo total de execucao: %.2f segundos\n", tempo);
+    printf("Threads utilizadas: 5\n");
+    printf(" - Thread 1: leitura dos dados (Caxias)\n");
+    printf(" - Thread 2: calculo das estatisticas (Caxias)\n");
+    printf(" - Thread 3: leitura dos dados (Bento)\n");
+    printf(" - Thread 4: calculo das estatisticas (Bento)\n");
+    printf(" - Thread 5: registro de logs\n");
+    printf("\n");
+    printf("Arquivo de log gerado: processamento.log\n");
+    printf("\n");
+    printLinha(0);
+    printf("Processamento finalizado com sucesso.\n");
     return 0;
 }
