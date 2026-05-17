@@ -9,10 +9,10 @@ Análise de dados de sensores IoT utilizando pthreads (POSIX Threads) em C.
 
 ## Arquivos necessários
 
-Descompacte o arquivo `Dados.zip`. Dentro da pasta gerada você encontrará 
-dois arquivos JSON. Copie esses dois arquivos para a mesma pasta onde 
-está o código-fonte do programa, de forma que fiquem juntos com os 
-arquivos `processamento_threads.c`, `cJSON.c` e `cJSON.h`.
+Descompacte o arquivo `Dados.zip` na mesma pasta onde estão os arquivos do projeto.
+Os dois arquivos JSON necessários para a execução serão extraídos automaticamente.
+Caso não sejam extraidos automaticamente na pasta com o restante dos arquivos, mova-os
+para a mesma.
 
 Os arquivos JSON devem ter os seguintes nomes:
 - `mqtt_senzemo_cx_bg.json`
