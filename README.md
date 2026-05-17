@@ -1,3 +1,5 @@
+Participantes: Nicolau Foppa e Vicenzo Vilhena Basso
+
 # dados_sens_pthread
 
 Análise de dados de sensores IoT utilizando pthreads (POSIX Threads) em C.
